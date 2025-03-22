@@ -1,4 +1,5 @@
 # The model.
+from sklearn.metrics import precision_score, recall_score, f1_score
 
 # >>>
 if __name__ == '__main__':
@@ -29,8 +30,11 @@ from torch import Tensor
 from tqdm import tqdm
 
 import lib
-from lib import KWArgs
+from data import preprocess_data
+import torch
 
+from typing import Dict, Any
+KWArgs = Dict[str, Any]
 
 @dataclass(frozen=True)
 class Config:
@@ -316,64 +320,104 @@ class Model(nn.Module):
 def main(
     config: lib.JSONDict, output: Union[str, Path], *, force: bool = False
 ) -> Optional[lib.JSONDict]:
-    # >>> start
-    if not lib.start(output, force=force):
-        return None
 
     output = Path(output)
     report = lib.create_report(config)
     C = lib.make_config(Config, config)
 
-    delu.random.seed(C.seed)
-    device = lib.get_device()
 
-    # >>> data
-    dataset = (
-        C.data if isinstance(C.data, lib.Dataset) else lib.build_dataset(**C.data)
-    ).to_torch(device)
-    if dataset.is_regression:
-        dataset.data['Y'] = {k: v.float() for k, v in dataset.Y.items()}
-    Y_train = dataset.Y['train'].to(
-        torch.long if dataset.is_multiclass else torch.float
-    )
+    file_paths = [
+        "data/AEEEM/EQ.csv",
+        "data/AEEEM/JDT.csv",
+        "data/AEEEM/LC.csv",
+        "data/AEEEM/ML.csv",
+        "data/AEEEM/PDE.csv",
+        "data/Relink/apache.csv",
+        "data/Relink/safe.csv",
+        "data/Relink/zxing.csv"
+    ]
+
+    # 데이터 전처리
+    splits = preprocess_data(file_paths)
+
+    # 모델 생성 및 학습
+    dataset_name = "EQ.csv"  # 예시로 EQ.csv 사용
+    X_train = splits[dataset_name]["X_train"]
+    X_test = splits[dataset_name]["X_test"]
+    y_train = splits[dataset_name]["y_train"]
+    y_test = splits[dataset_name]["y_test"]
+
+    # PyTorch Tensor로 변환
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    X_train_tensor = torch.from_numpy(X_train).float()
+    X_test_tensor = torch.from_numpy(X_test).float()
+    y_train_tensor = torch.from_numpy(y_train).long()
+    y_test_tensor = torch.from_numpy(y_test).long()
 
     # >>> model
     model = Model(
-        n_num_features=dataset.n_num_features,
-        n_bin_features=dataset.n_bin_features,
-        cat_cardinalities=dataset.cat_cardinalities(),
-        n_classes=dataset.n_classes(),
-        **C.model,
+        n_num_features=X_train.shape[1],
+        n_bin_features=1,
+        cat_cardinalities=[],
+        n_classes=2
     )
-    report['n_parameters'] = lib.get_n_parameters(model)
-    logger.info(f'n_parameters = {report["n_parameters"]}')
-    report['prediction_type'] = None if dataset.is_regression else 'logits'
     model.to(device)
-    if torch.cuda.device_count() > 1:
-        model = nn.DataParallel(model)  # type: ignore[code]
 
-    # >>> training
-    def zero_wd_condition(
-        module_name: str,
-        module: nn.Module,
-        parameter_name: str,
-        parameter: nn.parameter.Parameter,
-    ):
-        return (
-            'label_encoder' in module_name
-            or 'label_encoder' in parameter_name
-            or lib.default_zero_weight_decay_condition(
-                module_name, module, parameter_name, parameter
-            )
-        )
+    X_train_tensor, y_train_tensor = X_train_tensor.to(device), y_train_tensor.to(device)
 
-    optimizer = lib.make_optimizer(
-        model, **C.optimizer, zero_weight_decay_condition=zero_wd_condition
-    )
-    loss_fn = lib.get_loss_fn(dataset.task_type)
+    #모델 훈련
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    loss_fn = nn.CrossEntropyLoss()
 
-    train_size = dataset.size('train')
-    train_indices = torch.arange(train_size, device=device)
+    # 학습 루프
+    for epoch in range(10):  # 학습 에포크 수
+        model.train()
+        optimizer.zero_grad()
+
+        # 입력 데이터를 모델에 맞게 구성
+        x_ = {'num': X_train_tensor}
+        y = y_train_tensor
+        candidate_x_ = {'num': X_train_tensor}  # 후보 데이터 (예시로 학습 데이터 사용)
+        candidate_y = y_train_tensor
+        context_size = 10  # 컨텍스트 크기
+        is_train = True
+
+        output = model(x_, y, candidate_x_, candidate_y, context_size, is_train)
+        loss = loss_fn(output, y)
+
+        loss.backward()
+        optimizer.step()
+
+        print(f"Epoch {epoch + 1}, Loss: {loss.item()}")
+
+    # 모델 예측
+    model.eval()
+    with torch.no_grad():
+        predictions = model(X_test_tensor)
+
+    # 예측값을 이진 분류 결과로 변환
+    _, predicted = torch.max(predictions, dim=1)
+
+    # 성능 평가
+    precision = precision_score(y_test_tensor.cpu().numpy(), predicted.cpu().numpy())
+    recall = recall_score(y_test_tensor.cpu().numpy(), predicted.cpu().numpy())
+    f1 = f1_score(y_test_tensor.cpu().numpy(), predicted.cpu().numpy())
+
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall: {recall:.4f}")
+    print(f"F1-score: {f1:.4f}")
+
+    # PD (Detection Rate)와 PF (False Positive Rate) 계산
+    from sklearn.metrics import confusion_matrix
+
+    cm = confusion_matrix(y_test_tensor.cpu().numpy(), predicted.cpu().numpy())
+    TP, FP, FN, TN = cm[1, 1], cm[0, 1], cm[1, 0], cm[0, 0]
+
+    pd = TP / (TP + FN)
+    pf = FP / (FP + TN)
+
+    print(f"PD (Detection Rate): {pd:.4f}")
+    print(f"PF (False Positive Rate): {pf:.4f}")
 
     epoch = 0
     eval_batch_size = 32768
@@ -382,79 +426,74 @@ def main(
     training_log = []
     writer = torch.utils.tensorboard.SummaryWriter(output)  # type: ignore[code]
 
-    def get_Xy(part: str, idx) -> tuple[dict[str, Tensor], Tensor]:
-        batch = (
-            {
-                key[2:]: dataset.data[key][part]
-                for key in dataset.data
-                if key.startswith('X_')
-            },
-            dataset.Y[part],
-        )
-        return (
-            batch
-            if idx is None
-            else ({k: v[idx] for k, v in batch[0].items()}, batch[1][idx])
-        )
+    def get_Xy(part: str, idx: Optional[Tensor]) -> tuple[dict[str, Tensor], Tensor]:
+        if part == 'train':
+            X = X_train_tensor
+            y = y_train_tensor
+        elif part == 'test':
+            X = X_test_tensor
+            y = y_test_tensor
+        else:
+            raise ValueError("Invalid part")
 
-    def apply_model(part: str, idx: Tensor, training: bool):
-        x, y = get_Xy(part, idx)
+        if idx is not None:
+            X = X[idx]
+            y = y[idx]
 
-        candidate_indices = train_indices
-        is_train = part == 'train'
-        if is_train:
-            # NOTE: here, the training batch is removed from the candidates.
-            # It will be added back inside the model's forward pass.
-            candidate_indices = candidate_indices[~torch.isin(candidate_indices, idx)]
-        candidate_x, candidate_y = get_Xy(
-            'train',
-            # This condition is here for historical reasons, it could be just
-            # the unconditional `candidate_indices`.
-            None if candidate_indices is train_indices else candidate_indices,
-        )
+        return {'num': X}, y
 
-        return model(
-            x_=x,
-            y=y if is_train else None,
-            candidate_x_=candidate_x,
-            candidate_y=candidate_y,
-            context_size=C.context_size,
-            is_train=is_train,
-        ).squeeze(-1)
+    train_size = len(y_train_tensor)
+    train_indices = torch.arange(train_size, device=device)
+
 
     @torch.inference_mode()
     def evaluate(parts: list[str], eval_batch_size: int):
         model.eval()
         predictions = {}
+        parts = ['train', 'test']
+
         for part in parts:
-            while eval_batch_size:
-                try:
-                    predictions[part] = (
-                        torch.cat(
-                            [
-                                apply_model(part, idx, False)
-                                for idx in torch.arange(
-                                    dataset.size(part), device=device
-                                ).split(eval_batch_size)
-                            ]
-                        )
-                        .cpu()
-                        .numpy()
-                    )
-                except RuntimeError as err:
-                    if not lib.is_oom_exception(err):
-                        raise
-                    eval_batch_size //= 2
-                    logger.warning(f'eval_batch_size = {eval_batch_size}')
-                else:
-                    break
-            if not eval_batch_size:
-                RuntimeError('Not enough memory even for eval_batch_size=1')
-        metrics = (
-            dataset.calculate_metrics(predictions, report['prediction_type'])
-            if lib.are_valid_predictions(predictions)
-            else {x: {'score': -999999.0} for x in predictions}
-        )
+            if part == 'train':
+                X = X_train_tensor
+                y = y_train_tensor
+            elif part == 'test':
+                X = X_test_tensor
+                y = y_test_tensor
+
+            predictions[part] = []
+            for i in range(0, len(X), eval_batch_size):
+                batch_X = X[i:i + eval_batch_size]
+                batch_y = y[i:i + eval_batch_size]
+
+                x_ = {'num': batch_X}
+                candidate_x_ = {'num': batch_X}  # 후보 데이터 (예시로 학습 데이터 사용)
+                candidate_y = batch_y
+                context_size = 10  # 컨텍스트 크기
+                is_train = False
+
+                output = model(
+                    x_=x_,
+                    y=None,
+                    candidate_x_=candidate_x_,
+                    candidate_y=candidate_y,
+                    context_size=context_size,
+                    is_train=is_train,
+                )
+                predictions[part].append(output.cpu().numpy())
+
+            predictions[part] = np.concatenate(predictions[part])
+
+        metrics = {}
+        for part in parts:
+            if part == 'train':
+                y = y_train_tensor
+            elif part == 'test':
+                y = y_test_tensor
+
+            _, predicted = torch.max(torch.from_numpy(predictions[part]), dim=1)
+            accuracy = (predicted == y).sum().item() / len(y)
+            metrics[part] = {'accuracy': accuracy}
+
         return metrics, predictions, eval_batch_size
 
     def save_checkpoint():
@@ -485,9 +524,29 @@ def main(
             lib.make_random_batches(train_size, C.batch_size, device),
             desc=f'Epoch {epoch}',
         ):
+            # batch_idx에 해당하는 데이터를 모델에 맞게 준비
+            batch_x = X_train_tensor[batch_idx]
+            batch_y = y_train_tensor[batch_idx]
+
+            x_ = {'num': batch_x}
+            candidate_x_ = {'num': X_train_tensor}  # 후보 데이터 (예시로 학습 데이터 사용)
+            candidate_y = y_train_tensor
+            context_size = 10  # 컨텍스트 크기
+            is_train = True
+            # 모델에 입력을 제공하고 손실 계산
+            output = model(x_, batch_y, candidate_x_, candidate_y, context_size, is_train)
+            loss = loss_fn(output, batch_y)
+
             loss, new_chunk_size = lib.train_step(
                 optimizer,
-                lambda idx: loss_fn(apply_model('train', idx, True), Y_train[idx]),
+                lambda idx: loss_fn(model(
+                    {'num': X_train_tensor[idx]},
+                    y_train_tensor[idx],
+                    {'num': X_train_tensor},  # 후보 데이터 (예시로 학습 데이터 사용)
+                    y_train_tensor,
+                    context_size,
+                    True
+                ), y_train_tensor[idx]),
                 batch_idx,
                 chunk_size or C.batch_size,
             )
