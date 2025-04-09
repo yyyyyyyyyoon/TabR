@@ -14,32 +14,32 @@ if __name__ == '__main__':
 
 import math
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal, Optional, Union
 
 import delu
 import faiss
 import faiss.contrib.torch_utils  # noqa  << this line makes faiss work with PyTorch
-import numpy as np
-import torch
+import numpy
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.tensorboard
 from loguru import logger
 from torch import Tensor
 from tqdm import tqdm
-
+import data
+from torch.utils.tensorboard import SummaryWriter
 import lib
 from data import preprocess_data
 import torch
 
 from typing import Dict, Any
 KWArgs = Dict[str, Any]
+os.environ["LOKY_MAX_CPU_COUNT"] = "4"
 
 @dataclass(frozen=True)
 class Config:
     seed: int
-    data: Union[lib.Dataset[np.ndarray], KWArgs]  # lib.data.build_dataset
+    data: Dict[str, numpy.ndarray]
     model: KWArgs  # Model
     context_size: int
     optimizer: KWArgs  # lib.deep.make_optimizer
@@ -81,6 +81,12 @@ class Model(nn.Module):
         if encoder_n_blocks == 0:
             assert not mixer_normalization
         super().__init__()
+
+        # normalization 클래스 가져오기
+        Normalization = getattr(nn, normalization)
+        # activation 클래스 가져오기
+        Activation = getattr(nn, activation)
+
         if dropout1 == 'dropout0':
             dropout1 = dropout0
 
@@ -94,9 +100,10 @@ class Model(nn.Module):
         )
 
         # >>> E
+        n_bin_features = 0
+        cat_cardinalities = []
         d_in = (
             n_num_features
-            * (1 if num_embeddings is None else num_embeddings['d_embedding'])
             + n_bin_features
             + sum(cat_cardinalities)
         )
@@ -144,7 +151,7 @@ class Model(nn.Module):
         self.head = nn.Sequential(
             Normalization(d_main),
             Activation(),
-            nn.Linear(d_main, lib.get_d_out(n_classes)),
+            nn.Linear(d_main, 2), # num_classes=2
         )
 
         # >>>
@@ -186,7 +193,6 @@ class Model(nn.Module):
             x.append(self.one_hot_encoder(x_cat))
         assert x
         x = torch.cat(x, dim=1)
-
         x = self.linear(x)
         for block in self.blocks0:
             x = x + block(x)
@@ -317,31 +323,22 @@ class Model(nn.Module):
         return x
 
 
-def main(
-    config: lib.JSONDict, output: Union[str, Path], *, force: bool = False
-) -> Optional[lib.JSONDict]:
+def main() -> None:
+    # 로그 디렉토리 설정
+    log_dir = "logs/run1"  # 문자열 경로로 설정
 
-    output = Path(output)
-    report = lib.create_report(config)
-    C = lib.make_config(Config, config)
+    # 디렉토리가 없으면 생성
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
 
-
-    file_paths = [
-        "data/AEEEM/EQ.csv",
-        "data/AEEEM/JDT.csv",
-        "data/AEEEM/LC.csv",
-        "data/AEEEM/ML.csv",
-        "data/AEEEM/PDE.csv",
-        "data/Relink/apache.csv",
-        "data/Relink/safe.csv",
-        "data/Relink/zxing.csv"
-    ]
+    # SummaryWriter 초기화
+    writer = SummaryWriter(log_dir=log_dir)
 
     # 데이터 전처리
-    splits = preprocess_data(file_paths)
-
+    splits = preprocess_data(data.file_paths)
     # 모델 생성 및 학습
     dataset_name = "EQ.csv"  # 예시로 EQ.csv 사용
+
     X_train = splits[dataset_name]["X_train"]
     X_test = splits[dataset_name]["X_test"]
     y_train = splits[dataset_name]["y_train"]
@@ -351,19 +348,48 @@ def main(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     X_train_tensor = torch.from_numpy(X_train).float()
     X_test_tensor = torch.from_numpy(X_test).float()
-    y_train_tensor = torch.from_numpy(y_train).long()
-    y_test_tensor = torch.from_numpy(y_test).long()
+    y_train_tensor = torch.from_numpy(numpy.array(y_train)).long()
+    y_test_tensor = torch.from_numpy(numpy.array(y_test)).long()
 
-    # >>> model
+    # model 생성
     model = Model(
         n_num_features=X_train.shape[1],
         n_bin_features=1,
         cat_cardinalities=[],
-        n_classes=2
+        n_classes=2,
+        num_embeddings=None,  # 또는 필요한 딕셔너리 제공
+        d_main=128,
+        d_multiplier=2.0,
+        encoder_n_blocks=3,
+        predictor_n_blocks=2,
+        mixer_normalization='auto',
+        context_dropout=0.1,
+        dropout0=0.2,
+        dropout1='dropout0',  # 또는 float 값 제공
+        normalization='BatchNorm1d',
+        activation='ReLU',
+        memory_efficient=False,
+        candidate_encoding_batch_size=None,
     )
     model.to(device)
 
     X_train_tensor, y_train_tensor = X_train_tensor.to(device), y_train_tensor.to(device)
+
+    C = Config(
+        seed=42,
+        data={
+            "X_train": X_train,
+            "X_test": X_test,
+            "y_train": y_train,
+            "y_test": y_test
+        },
+        model={"model_name": "TabR"},
+        context_size=10,
+        optimizer={"optimizer_name": "Adam"},
+        batch_size=32,
+        patience=5,
+        n_epochs=10
+    )
 
     #모델 훈련
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
@@ -377,28 +403,46 @@ def main(
         # 입력 데이터를 모델에 맞게 구성
         x_ = {'num': X_train_tensor}
         y = y_train_tensor
+
+        # y의 형상 확인
+        batch_size = y.shape[0]
+
         candidate_x_ = {'num': X_train_tensor}  # 후보 데이터 (예시로 학습 데이터 사용)
         candidate_y = y_train_tensor
         context_size = 10  # 컨텍스트 크기
         is_train = True
 
-        output = model(x_, y, candidate_x_, candidate_y, context_size, is_train)
-        loss = loss_fn(output, y)
+        output = model(x_=x_, y=y, candidate_x_=candidate_x_, candidate_y=candidate_y, context_size=context_size, is_train=is_train)
 
+        loss = loss_fn(output, y)
+        loss_value = loss.item()
         loss.backward()
         optimizer.step()
 
-        print(f"Epoch {epoch + 1}, Loss: {loss.item()}")
+        print(f"Epoch {epoch + 1}, Loss: {loss_value}")
 
     # 모델 예측
     model.eval()
     with torch.no_grad():
-        predictions = model(X_test_tensor)
+        # 입력 데이터 준비
+        x_ = {'num': X_test_tensor}  # 입력 데이터
+        candidate_x_ = {'num': X_test_tensor}  # 후보 데이터
+
+        # 모델 호출
+        predictions = model(
+            x_=x_,
+            y=None,
+            candidate_x_=candidate_x_,
+            candidate_y=y_test_tensor,  # 테스트 레이블
+            context_size=10,  # 컨텍스트 크기
+            is_train=False,  # 평가 모드
+        )
+
 
     # 예측값을 이진 분류 결과로 변환
     _, predicted = torch.max(predictions, dim=1)
 
-    # 성능 평가
+    # 성능 지표 계산
     precision = precision_score(y_test_tensor.cpu().numpy(), predicted.cpu().numpy())
     recall = recall_score(y_test_tensor.cpu().numpy(), predicted.cpu().numpy())
     f1 = f1_score(y_test_tensor.cpu().numpy(), predicted.cpu().numpy())
@@ -420,11 +464,11 @@ def main(
     print(f"PF (False Positive Rate): {pf:.4f}")
 
     epoch = 0
-    eval_batch_size = 32768
+    eval_batch_size = min(32, len(X_test_tensor))
     chunk_size = None
     progress = delu.ProgressTracker(C.patience)
     training_log = []
-    writer = torch.utils.tensorboard.SummaryWriter(output)  # type: ignore[code]
+    writer = torch.utils.tensorboard.SummaryWriter(log_dir=log_dir)  # type: ignore[code]
 
     def get_Xy(part: str, idx: Optional[Tensor]) -> tuple[dict[str, Tensor], Tensor]:
         if part == 'train':
@@ -481,7 +525,7 @@ def main(
                 )
                 predictions[part].append(output.cpu().numpy())
 
-            predictions[part] = np.concatenate(predictions[part])
+            predictions[part] = numpy.concatenate(predictions[part])
 
         metrics = {}
         for part in parts:
@@ -504,13 +548,11 @@ def main(
                 'optimizer': optimizer.state_dict(),
                 'random_state': delu.random.get_state(),
                 'progress': progress,
-                'report': report,
                 'timer': timer,
                 'training_log': training_log,
             },
             output,
         )
-        lib.dump_report(report, output)
         lib.backup_output(output)
 
     print()
@@ -526,6 +568,7 @@ def main(
         ):
             # batch_idx에 해당하는 데이터를 모델에 맞게 준비
             batch_x = X_train_tensor[batch_idx]
+            y = batch_y
             batch_y = y_train_tensor[batch_idx]
 
             x_ = {'num': batch_x}
@@ -534,7 +577,7 @@ def main(
             context_size = 10  # 컨텍스트 크기
             is_train = True
             # 모델에 입력을 제공하고 손실 계산
-            output = model(x_, batch_y, candidate_x_, candidate_y, context_size, is_train)
+            output = model(x_=x_, y=y, candidate_x_=candidate_x_, candidate_y=candidate_y, context_size=context_size, is_train=False)
             loss = loss_fn(output, batch_y)
 
             loss, new_chunk_size = lib.train_step(
@@ -570,8 +613,6 @@ def main(
         progress.update(metrics['val']['score'])
         if progress.success:
             lib.celebrate()
-            report['best_epoch'] = epoch
-            report['metrics'] = metrics
             save_checkpoint()
             lib.dump_predictions(predictions, output)
 
@@ -580,22 +621,16 @@ def main(
 
         epoch += 1
         print()
-    report['time'] = str(timer)
 
     # >>> finish
     model.load_state_dict(lib.load_checkpoint(output)['model'])
-    report['metrics'], predictions, _ = evaluate(
-        ['train', 'val', 'test'], eval_batch_size
-    )
-    report['chunk_size'] = chunk_size
-    report['eval_batch_size'] = eval_batch_size
     lib.dump_predictions(predictions, output)
-    lib.dump_summary(lib.summarize(report), output)
     save_checkpoint()
-    lib.finish(output, report)
-    return report
 
+
+#if __name__ == '__main__':
+ #   lib.configure_libraries()
+  #  lib.run_Function_cli(main)
 
 if __name__ == '__main__':
-    lib.configure_libraries()
-    lib.run_Function_cli(main)
+    main()

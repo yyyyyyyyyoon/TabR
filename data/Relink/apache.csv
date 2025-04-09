@@ -1,4 +1,4 @@
-AvgCyclomatic,AvgCyclomaticModified,AvgCyclomaticStrict,AvgEssential,AvgLine,AvgLineBlank,AvgLineCode,AvgLineComment,CountLine,CountLineBlank,CountLineCode,CountLineCodeDecl,CountLineCodeExe,CountLineComment,CountSemicolon,CountStmt,CountStmtDecl,CountStmtExe,MaxCyclomatic,MaxCyclomaticModified,MaxCyclomaticStrict,RatioCommentToCode,SumCyclomatic,SumCyclomaticModified,SumCyclomaticStrict,SumEssential,isDefective
+AvgCyclomatic,AvgCyclomaticModified,AvgCyclomaticStrict,AvgEssential,AvgLine,AvgLineBlank,AvgLineCode,AvgLineComment,CountLine,CountLineBlank,CountLineCode,CountLineCodeDecl,CountLineCodeExe,CountLineComment,CountSemicolon,CountStmt,CountStmtDecl,CountStmtExe,MaxCyclomatic,MaxCyclomaticModified,MaxCyclomaticStrict,RatioCommentToCode,SumCyclomatic,SumCyclomaticModified,SumCyclomaticStrict,SumEssential,class
 12,11,14,4,82,5,61,7,2195,165,1185,191,907,328,719,916,178,738,51,51,56,0.28,221,197,246,81,buggy
 0,0,0,0,0,0,0,0,644,1,0,0,0,16,0,0,0,0,0,0,0,0,0,0,0,0,clean
 8,7,9,4,54,4,49,1,1945,209,1607,185,1096,65,19001,1049,172,877,45,26,45,0.04,256,217,277,128,buggy

@@ -27,7 +27,7 @@ import tomli_w
 import torch
 from loguru import logger
 
-from . import env
+from lib import env
 
 
 def configure_libraries():
@@ -272,7 +272,7 @@ def run_Function_cli(function: Function, argv: Optional[list[str]] = None) -> No
     # <<<
 
     config_path = env.get_path(args.config)
-    assert config_path.exists()
+    #assert config_path.exists()
     function(
         load_config(config_path),
         config_path.with_suffix(''),

@@ -22,14 +22,14 @@ def preprocess_data(file_paths):
 
         df = pd.read_csv(path)
 
-        target_col = "defects"
+        target_col = "class"
         if target_col not in df.columns:
             print(f"Warning: {path} 파일에서 '{target_col}' 컬럼을 찾을 수 없습니다.")
             continue
 
-        #defects 제외한 컬럼 (입력 데이터)
+        #class 제외한 컬럼 (입력 데이터)
         features = df.drop(target_col, axis=1)
-        # defects 컬럼 (정답 데이터)
+        #class 컬럼 (정답 데이터)
         labels = df[target_col].apply(lambda x: 1 if x == 'buggy' else 0)
 
         #학습 데이터와 테스트 데이터 분할
