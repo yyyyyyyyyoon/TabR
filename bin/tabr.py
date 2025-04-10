@@ -1,7 +1,3 @@
-# The model.
-from sklearn.metrics import precision_score, recall_score, f1_score
-
-# >>>
 if __name__ == '__main__':
     import os
     import sys
@@ -23,7 +19,6 @@ import numpy
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.tensorboard
-from loguru import logger
 from torch import Tensor
 from tqdm import tqdm
 import data
@@ -31,6 +26,9 @@ from torch.utils.tensorboard import SummaryWriter
 import lib
 from data import preprocess_data
 import torch
+from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix
+from loguru import logger
+from math import sqrt
 
 from typing import Dict, Any
 KWArgs = Dict[str, Any]
@@ -337,7 +335,16 @@ def main() -> None:
     # 데이터 전처리
     splits = preprocess_data(data.file_paths)
     # 모델 생성 및 학습
-    dataset_name = "EQ.csv"  # 예시로 EQ.csv 사용
+    if len(sys.argv) > 1:
+        dataset_name = sys.argv[1]
+    else:
+        print("Error: No dataset name provided.")
+        sys.exit(1)
+
+    # 전처리된 데이터 가져오기
+    if dataset_name not in splits:
+        print(f"Error: Dataset '{dataset_name}' not found in splits.")
+        sys.exit(1)
 
     X_train = splits[dataset_name]["X_train"]
     X_test = splits[dataset_name]["X_test"]
@@ -419,7 +426,7 @@ def main() -> None:
         loss.backward()
         optimizer.step()
 
-        print(f"Epoch {epoch + 1}, Loss: {loss_value}")
+       # print(f"Epoch {epoch + 1}, Loss: {loss_value}")
 
     # 모델 예측
     model.eval()
@@ -437,31 +444,39 @@ def main() -> None:
             context_size=10,  # 컨텍스트 크기
             is_train=False,  # 평가 모드
         )
-
+        probs = torch.softmax(predictions, dim=1)
+        positive_probs = probs[:, 1]
 
     # 예측값을 이진 분류 결과로 변환
     _, predicted = torch.max(predictions, dim=1)
 
-    # 성능 지표 계산
-    precision = precision_score(y_test_tensor.cpu().numpy(), predicted.cpu().numpy())
-    recall = recall_score(y_test_tensor.cpu().numpy(), predicted.cpu().numpy())
-    f1 = f1_score(y_test_tensor.cpu().numpy(), predicted.cpu().numpy())
+    # 성능 평가
+    def calculate_metrics(y_true, y_pred):
+        f1 = f1_score(y_true, y_pred)
 
-    print(f"Precision: {precision:.4f}")
-    print(f"Recall: {recall:.4f}")
-    print(f"F1-score: {f1:.4f}")
+        cm = confusion_matrix(y_true, y_pred)
+        TP, FP, FN, TN = cm[1, 1], cm[0, 1], cm[1, 0], cm[0, 0]
 
-    # PD (Detection Rate)와 PF (False Positive Rate) 계산
-    from sklearn.metrics import confusion_matrix
+        PD = TP / (TP + FN) if (TP + FN) > 0 else 0
+        PF = FP / (FP + TN) if (FP + TN) > 0 else 0
+        FIR = (PD - f1) / PD if PD > 0 else 0
+        Blance = 1 - (sqrt((0 - PF) ** 2 + (1 - PD) ** 2) / sqrt(2))
 
-    cm = confusion_matrix(y_test_tensor.cpu().numpy(), predicted.cpu().numpy())
-    TP, FP, FN, TN = cm[1, 1], cm[0, 1], cm[1, 0], cm[0, 0]
+        return {
+            "PD": PD,
+            "PF": PF,
+            "Blance" : Blance,
+            "FIR": FIR
+        }
 
-    pd = TP / (TP + FN)
-    pf = FP / (FP + TN)
+    metrics = calculate_metrics(
+        y_test_tensor.cpu().numpy(),
+        predicted.cpu().numpy()
+    )
 
-    print(f"PD (Detection Rate): {pd:.4f}")
-    print(f"PF (False Positive Rate): {pf:.4f}")
+    for metric_name, value in metrics.items():
+        print(f"{metric_name}: {value:.4f}")
+
 
     epoch = 0
     eval_batch_size = min(32, len(X_test_tensor))
@@ -568,8 +583,8 @@ def main() -> None:
         ):
             # batch_idx에 해당하는 데이터를 모델에 맞게 준비
             batch_x = X_train_tensor[batch_idx]
-            y = batch_y
             batch_y = y_train_tensor[batch_idx]
+            y = batch_y
 
             x_ = {'num': batch_x}
             candidate_x_ = {'num': X_train_tensor}  # 후보 데이터 (예시로 학습 데이터 사용)
