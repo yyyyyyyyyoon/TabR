@@ -11,7 +11,10 @@ file_paths = [
     "data/AEEEM/PDE.csv",
     "data/Relink/apache.csv",
     "data/Relink/safe.csv",
-    "data/Relink/zxing.csv"
+    "data/Relink/zxing.csv",
+    "data/AUDI/ProjectA.csv",
+    "data/AUDI/ProjectK.csv",
+    "data/AUDI/ProjectL.csv"
 ]
 
 def preprocess_data(file_paths):
@@ -30,7 +33,7 @@ def preprocess_data(file_paths):
         #class 제외한 컬럼 (입력 데이터)
         features = df.drop(target_col, axis=1)
         #class 컬럼 (정답 데이터)
-        labels = df[target_col].apply(lambda x: 1 if x == 'buggy' else 0)
+        labels = df[target_col]
 
         #학습 데이터와 테스트 데이터 분할
         X_train, X_test, y_train, y_test = train_test_split(

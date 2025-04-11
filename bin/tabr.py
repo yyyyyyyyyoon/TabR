@@ -26,7 +26,7 @@ from torch.utils.tensorboard import SummaryWriter
 import lib
 from data import preprocess_data
 import torch
-from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix
+from sklearn.metrics import f1_score, confusion_matrix
 from loguru import logger
 from math import sqrt
 
@@ -199,7 +199,6 @@ class Model(nn.Module):
 
     def forward(
         self,
-        *,
         x_: dict[str, Tensor],
         y: Optional[Tensor],
         candidate_x_: dict[str, Tensor],
@@ -329,9 +328,6 @@ def main() -> None:
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 
-    # SummaryWriter 초기화
-    writer = SummaryWriter(log_dir=log_dir)
-
     # 데이터 전처리
     splits = preprocess_data(data.file_paths)
     # 모델 생성 및 학습
@@ -351,12 +347,16 @@ def main() -> None:
     y_train = splits[dataset_name]["y_train"]
     y_test = splits[dataset_name]["y_test"]
 
+    # object → int
+    y_train = numpy.array(y_train, dtype=int)
+    y_test = numpy.array(y_test, dtype=int)
+
     # PyTorch Tensor로 변환
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     X_train_tensor = torch.from_numpy(X_train).float()
     X_test_tensor = torch.from_numpy(X_test).float()
-    y_train_tensor = torch.from_numpy(numpy.array(y_train)).long()
-    y_test_tensor = torch.from_numpy(numpy.array(y_test)).long()
+    y_train_tensor = torch.from_numpy(y_train).long()
+    y_test_tensor = torch.from_numpy(y_test).long()
 
     # model 생성
     model = Model(
@@ -402,82 +402,6 @@ def main() -> None:
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     loss_fn = nn.CrossEntropyLoss()
 
-    # 학습 루프
-    for epoch in range(10):  # 학습 에포크 수
-        model.train()
-        optimizer.zero_grad()
-
-        # 입력 데이터를 모델에 맞게 구성
-        x_ = {'num': X_train_tensor}
-        y = y_train_tensor
-
-        # y의 형상 확인
-        batch_size = y.shape[0]
-
-        candidate_x_ = {'num': X_train_tensor}  # 후보 데이터 (예시로 학습 데이터 사용)
-        candidate_y = y_train_tensor
-        context_size = 10  # 컨텍스트 크기
-        is_train = True
-
-        output = model(x_=x_, y=y, candidate_x_=candidate_x_, candidate_y=candidate_y, context_size=context_size, is_train=is_train)
-
-        loss = loss_fn(output, y)
-        loss_value = loss.item()
-        loss.backward()
-        optimizer.step()
-
-       # print(f"Epoch {epoch + 1}, Loss: {loss_value}")
-
-    # 모델 예측
-    model.eval()
-    with torch.no_grad():
-        # 입력 데이터 준비
-        x_ = {'num': X_test_tensor}  # 입력 데이터
-        candidate_x_ = {'num': X_test_tensor}  # 후보 데이터
-
-        # 모델 호출
-        predictions = model(
-            x_=x_,
-            y=None,
-            candidate_x_=candidate_x_,
-            candidate_y=y_test_tensor,  # 테스트 레이블
-            context_size=10,  # 컨텍스트 크기
-            is_train=False,  # 평가 모드
-        )
-        probs = torch.softmax(predictions, dim=1)
-        positive_probs = probs[:, 1]
-
-    # 예측값을 이진 분류 결과로 변환
-    _, predicted = torch.max(predictions, dim=1)
-
-    # 성능 평가
-    def calculate_metrics(y_true, y_pred):
-        f1 = f1_score(y_true, y_pred)
-
-        cm = confusion_matrix(y_true, y_pred)
-        TP, FP, FN, TN = cm[1, 1], cm[0, 1], cm[1, 0], cm[0, 0]
-
-        PD = TP / (TP + FN) if (TP + FN) > 0 else 0
-        PF = FP / (FP + TN) if (FP + TN) > 0 else 0
-        FIR = (PD - f1) / PD if PD > 0 else 0
-        Blance = 1 - (sqrt((0 - PF) ** 2 + (1 - PD) ** 2) / sqrt(2))
-
-        return {
-            "PD": PD,
-            "PF": PF,
-            "Blance" : Blance,
-            "FIR": FIR
-        }
-
-    metrics = calculate_metrics(
-        y_test_tensor.cpu().numpy(),
-        predicted.cpu().numpy()
-    )
-
-    for metric_name, value in metrics.items():
-        print(f"{metric_name}: {value:.4f}")
-
-
     epoch = 0
     eval_batch_size = min(32, len(X_test_tensor))
     chunk_size = None
@@ -509,7 +433,7 @@ def main() -> None:
     def evaluate(parts: list[str], eval_batch_size: int):
         model.eval()
         predictions = {}
-        parts = ['train', 'test']
+        parts = ["train", "test"]
 
         for part in parts:
             if part == 'train':
@@ -518,29 +442,42 @@ def main() -> None:
             elif part == 'test':
                 X = X_test_tensor
                 y = y_test_tensor
+            else:
+                raise ValueError(f"Unknown part: {part}")
 
-            predictions[part] = []
-            for i in range(0, len(X), eval_batch_size):
-                batch_X = X[i:i + eval_batch_size]
-                batch_y = y[i:i + eval_batch_size]
+            while eval_batch_size:
+                try:
+                    preds = []
+                    for i in range(0, len(X), eval_batch_size):
+                        batch_X = X[i:i + eval_batch_size]
+                        batch_y = y[i:i + eval_batch_size]
 
-                x_ = {'num': batch_X}
-                candidate_x_ = {'num': batch_X}  # 후보 데이터 (예시로 학습 데이터 사용)
-                candidate_y = batch_y
-                context_size = 10  # 컨텍스트 크기
-                is_train = False
+                        x_ = {'num': batch_X}
+                        candidate_x_ = {'num': batch_X}  # 후보 데이터 (예시로 학습 데이터 사용)
+                        candidate_y = batch_y
+                        context_size = 10  # 컨텍스트 크기
+                        is_train = False
 
-                output = model(
-                    x_=x_,
-                    y=None,
-                    candidate_x_=candidate_x_,
-                    candidate_y=candidate_y,
-                    context_size=context_size,
-                    is_train=is_train,
-                )
-                predictions[part].append(output.cpu().numpy())
+                        output = model(
+                            x_=x_,
+                            y=None,
+                            candidate_x_=candidate_x_,
+                            candidate_y=candidate_y,
+                            context_size=context_size,
+                            is_train=False,
+                        )
+                        preds.append(output.cpu())
+                    predictions[part] = torch.cat(preds).numpy()
+                except RuntimeError as err:
+                    if "out of memory" not in str(err).lower():
+                        raise
+                    eval_batch_size //= 2
+                    print(f"[WARNING] Out of memory. Reducing eval_batch_size to {eval_batch_size}")
+                else:
+                    break
 
-            predictions[part] = numpy.concatenate(predictions[part])
+            if not eval_batch_size:
+                raise RuntimeError('Not enough memory even for eval_batch_size=1')
 
         metrics = {}
         for part in parts:
@@ -549,9 +486,26 @@ def main() -> None:
             elif part == 'test':
                 y = y_test_tensor
 
-            _, predicted = torch.max(torch.from_numpy(predictions[part]), dim=1)
-            accuracy = (predicted == y).sum().item() / len(y)
-            metrics[part] = {'accuracy': accuracy}
+            _, y_pred = torch.max(torch.from_numpy(predictions[part]), dim=1)
+
+            y_true_np = y.cpu().numpy()
+            y_pred_np = y_pred.cpu().numpy()
+
+            # confusion matrix, f1은 FIR 계산에 필요
+            cm = confusion_matrix(y_true_np, y_pred_np)
+            TP, FP, FN, TN = cm[1, 1], cm[0, 1], cm[1, 0], cm[0, 0]
+            FI = (TP + FP) / (TP + FP + TN + FN)
+            PD = TP / (TP + FN) if (TP + FN) > 0 else 0
+            PF = FP / (FP + TN) if (FP + TN) > 0 else 0
+            FIR = (PD - FI) / PD if PD > 0 else 0
+            Blance = 1 - (sqrt((0 - PF) ** 2 + (1 - PD) ** 2) / sqrt(2))
+
+            metrics[part] = {
+                'PD': PD,
+                'PF': PF,
+                'Blance': Blance,
+                'FIR': FIR
+            }
 
         return metrics, predictions, eval_batch_size
 
@@ -572,80 +526,30 @@ def main() -> None:
 
     print()
     timer = lib.run_timer()
-    while epoch < C.n_epochs:
-        print(f'[...] {lib.try_get_relative_path(output)} | {timer}')
-
+    for epoch in range(C.n_epochs):
         model.train()
-        epoch_losses = []
-        for batch_idx in tqdm(
-            lib.make_random_batches(train_size, C.batch_size, device),
-            desc=f'Epoch {epoch}',
-        ):
-            # batch_idx에 해당하는 데이터를 모델에 맞게 준비
+        epoch_loss = 0
+        for batch_idx in lib.make_random_batches(len(y_train_tensor), C.batch_size, device):
             batch_x = X_train_tensor[batch_idx]
             batch_y = y_train_tensor[batch_idx]
-            y = batch_y
 
             x_ = {'num': batch_x}
-            candidate_x_ = {'num': X_train_tensor}  # 후보 데이터 (예시로 학습 데이터 사용)
+            candidate_x_ = {'num': X_train_tensor}
             candidate_y = y_train_tensor
-            context_size = 10  # 컨텍스트 크기
-            is_train = True
-            # 모델에 입력을 제공하고 손실 계산
-            output = model(x_=x_, y=y, candidate_x_=candidate_x_, candidate_y=candidate_y, context_size=context_size, is_train=False)
+
+            optimizer.zero_grad()
+            output = model(x_, batch_y, candidate_x_, candidate_y, context_size=10, is_train=True)
             loss = loss_fn(output, batch_y)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
 
-            loss, new_chunk_size = lib.train_step(
-                optimizer,
-                lambda idx: loss_fn(model(
-                    {'num': X_train_tensor[idx]},
-                    y_train_tensor[idx],
-                    {'num': X_train_tensor},  # 후보 데이터 (예시로 학습 데이터 사용)
-                    y_train_tensor,
-                    context_size,
-                    True
-                ), y_train_tensor[idx]),
-                batch_idx,
-                chunk_size or C.batch_size,
-            )
-            epoch_losses.append(loss.detach())
-            if new_chunk_size and new_chunk_size < (chunk_size or C.batch_size):
-                chunk_size = new_chunk_size
-                logger.warning(f'chunk_size = {chunk_size}')
+        print(f"Epoch {epoch + 1}/{C.n_epochs}, Loss: {epoch_loss:.4f}")
+        metrics, predictions, eval_batch_size = evaluate(["train", "test"], eval_batch_size=32)
 
-        epoch_losses, mean_loss = lib.process_epoch_losses(epoch_losses)
-        metrics, predictions, eval_batch_size = evaluate(
-            ['val', 'test'], eval_batch_size
-        )
-        lib.print_metrics(mean_loss, metrics)
-        training_log.append(
-            {'epoch-losses': epoch_losses, 'metrics': metrics, 'time': timer()}
-        )
-        writer.add_scalars('loss', {'train': mean_loss}, epoch, timer())
         for part in metrics:
-            writer.add_scalars('score', {part: metrics[part]['score']}, epoch, timer())
-
-        progress.update(metrics['val']['score'])
-        if progress.success:
-            lib.celebrate()
-            save_checkpoint()
-            lib.dump_predictions(predictions, output)
-
-        elif progress.fail or not lib.are_valid_predictions(predictions):
-            break
-
-        epoch += 1
-        print()
-
-    # >>> finish
-    model.load_state_dict(lib.load_checkpoint(output)['model'])
-    lib.dump_predictions(predictions, output)
-    save_checkpoint()
-
-
-#if __name__ == '__main__':
- #   lib.configure_libraries()
-  #  lib.run_Function_cli(main)
+            print(f"[{part.upper()}] PD: {metrics[part]['PD']:.4f}, PF: {metrics[part]['PF']:.4f}, "
+                  f"FIR: {metrics[part]['FIR']:.4f}, Blance: {metrics[part]['Blance']:.4f}")
 
 if __name__ == '__main__':
     main()

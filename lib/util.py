@@ -452,15 +452,17 @@ def print_sep(ch='-'):
 
 def print_metrics(loss: float, metrics: dict) -> None:
     print(
-        f'(val) {metrics["val"]["score"]:.3f}'
-        f' (test) {metrics["test"]["score"]:.3f}'
-        f' (loss) {loss:.5f}'
+        f"(test) PD: {metrics['test']['PD']:.3f}, "
+        f"PF: {metrics['test']['PF']:.3f}, "
+        f"Blance: {metrics['test']['Blance']:.3f}, "
+        f"FIR: {metrics['test']['FIR']:.3f}, "
+        f"(loss): {loss:.5f}"
     )
 
 
 def log_scores(metrics: dict) -> None:
     logger.debug(
-        f'[val] {metrics["val"]["score"]:.4f} [test] {metrics["test"]["score"]:.4f}'
+        #f'[val] {metrics["val"]["score"]:.4f} [test] {metrics["test"]["score"]:.4f}'
     )
 
 
