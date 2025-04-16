@@ -454,7 +454,7 @@ def print_metrics(loss: float, metrics: dict) -> None:
     print(
         f"(test) PD: {metrics['test']['PD']:.3f}, "
         f"PF: {metrics['test']['PF']:.3f}, "
-        f"Blance: {metrics['test']['Blance']:.3f}, "
+        f"Balance: {metrics['test']['Balance']:.3f}, "
         f"FIR: {metrics['test']['FIR']:.3f}, "
         f"(loss): {loss:.5f}"
     )

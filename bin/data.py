@@ -1,29 +1,24 @@
+import os
+
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
 from imblearn.over_sampling import SMOTE
 
-file_paths = [
-    "data/AEEEM/EQ.csv",
-    "data/AEEEM/JDT.csv",
-    "data/AEEEM/LC.csv",
-    "data/AEEEM/ML.csv",
-    "data/AEEEM/PDE.csv",
-    "data/Relink/apache.csv",
-    "data/Relink/safe.csv",
-    "data/Relink/zxing.csv",
-    "data/AUDI/ProjectA.csv",
-    "data/AUDI/ProjectK.csv",
-    "data/AUDI/ProjectL.csv"
-]
+def preprocess_data(paths):
+    if isinstance(paths, str):
+        paths = [paths]
 
-def preprocess_data(file_paths):
     splits = {}
 
-    for path in file_paths:
-        dataset_name = path.split("/")[-1]  # 파일명만 추출
+    for path in paths:
+        dataset_name = os.path.splitext(os.path.basename(path))[0]  # 확장자 제거한 파일명 추출
 
-        df = pd.read_csv(path)
+        try:
+            df = pd.read_csv(path)
+        except Exception as e:
+            print(f"Error reading {path}: {e}")
+            continue
 
         target_col = "class"
         if target_col not in df.columns:

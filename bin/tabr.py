@@ -1,4 +1,5 @@
 import pandas as pd
+import os
 
 if __name__ == '__main__':
     import os
@@ -371,9 +372,9 @@ def evaluate(model, X_eval_tensor, y_eval_tensor, candidate_X_tensor, candidate_
         PD = TP / (TP + FN) if (TP + FN) > 0 else 0
         PF = FP / (FP + TN) if (FP + TN) > 0 else 0
         FIR = (PD - FI) / PD if PD > 0 else 0
-        Blance = 1 - (sqrt((0 - PF) ** 2 + (1 - PD) ** 2) / sqrt(2))
+        Balance = 1 - (sqrt((0 - PF) ** 2 + (1 - PD) ** 2) / sqrt(2))
 
-        return {'PD': PD, 'PF': PF, 'FIR': FIR, 'Blance': Blance}
+        return {'PD': PD, 'PF': PF, 'FIR': FIR, 'Balance': Balance}
 
 def main() -> None:
     # 데이터 전처리
@@ -436,7 +437,7 @@ def main() -> None:
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
         loss_fn = nn.CrossEntropyLoss()
 
-        for epoch in range(10):
+        for epoch in range(30):
             model.train()
             epoch_loss = 0
             for batch_idx in lib.make_random_batches(len(y_tr_tensor), 32, device):

@@ -1,2 +1,4 @@
 tabrenv/
 .idea/
+__pycache__/
+*.pyc
