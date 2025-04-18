@@ -1,0 +1,15 @@
+{
+  "dataset": "EQ",
+  "adjusted_score": 0.6251500028833525,
+  "PD": 0.8055567596726728,
+  "PF": 0.3608135135786405,
+  "FIR": 0.27735780538708793,
+  "Balance": 0.6932154759391255,
+  "params": {
+    "d_main": 365,
+    "encoder_n_blocks": 3,
+    "context_size": 96,
+    "predictor_n_blocks": 1,
+    "n_epochs": 29
+  }
+}

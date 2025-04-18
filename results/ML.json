@@ -1,0 +1,15 @@
+{
+  "dataset": "ML",
+  "adjusted_score": 0.8436269658204596,
+  "PD": 0.9506981068779293,
+  "PF": 0.21414228211493944,
+  "FIR": 0.38772887408584644,
+  "Balance": 0.8423974322313862,
+  "params": {
+    "d_main": 365,
+    "encoder_n_blocks": 3,
+    "context_size": 160,
+    "predictor_n_blocks": 3,
+    "n_epochs": 47
+  }
+}

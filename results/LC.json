@@ -1,0 +1,15 @@
+{
+  "dataset": "LC",
+  "adjusted_score": 0.8921329131917671,
+  "PD": 0.955038863575449,
+  "PF": 0.1258119007673637,
+  "FIR": 0.43388440158691766,
+  "Balance": 0.8981120350792837,
+  "params": {
+    "d_main": 365,
+    "encoder_n_blocks": 3,
+    "context_size": 64,
+    "predictor_n_blocks": 1,
+    "n_epochs": 34
+  }
+}

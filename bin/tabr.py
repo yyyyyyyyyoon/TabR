@@ -34,7 +34,7 @@ from math import sqrt
 from typing import Dict, Any
 
 KWArgs = Dict[str, Any]
-os.environ["LOKY_MAX_CPU_COUNT"] = "4"
+os.environ["LOKY_MAX_CPU_COUNT"] = "2"
 
 @dataclass(frozen=True)
 class Config:
@@ -212,22 +212,6 @@ class Model(nn.Module):
         with torch.set_grad_enabled(
             torch.is_grad_enabled() and not self.memory_efficient
         ):
-            # NOTE: during evaluation, candidate keys can be computed just once, which
-            # looks like an easy opportunity for optimization. However:
-            # - if your dataset is small or/and the encoder is just a linear layer
-            #   (no embeddings and encoder_n_blocks=0), then encoding candidates
-            #   is not a bottleneck.
-            # - implementing this optimization makes the code complex and/or unobvious,
-            #   because there are many things that should be taken into account:
-            #     - is the input coming from the "train" part?
-            #     - is self.training True or False?
-            #     - is PyTorch autograd enabled?
-            #     - is saving and loading checkpoints handled correctly?
-            # This is why we do not implement this optimization.
-
-            # When memory_efficient is True, this potentially heavy computation is
-            # performed without gradients.
-            # Later, it is recomputed with gradients only for the context objects.
             candidate_k = (
                 self._encode(candidate_x_)[1]
                 if self.candidate_encoding_batch_size is None
@@ -242,21 +226,12 @@ class Model(nn.Module):
             )
         x, k = self._encode(x_)
         if is_train:
-            # NOTE: here, we add the training batch back to the candidates after the
-            # function `apply_model` removed them. The further code relies
-            # on the fact that the first batch_size candidates come from the
-            # training batch.
             assert y is not None
             candidate_k = torch.cat([k, candidate_k])
             candidate_y = torch.cat([y, candidate_y])
         else:
             assert y is None
 
-        # >>>
-        # The search below is optimized for larger datasets and is significantly faster
-        # than the naive solution (keep autograd on + manually compute all pairwise
-        # squared L2 distances + torch.topk).
-        # For smaller datasets, however, the naive solution can actually be faster.
         batch_size, d_main = k.shape
         device = k.device
         with torch.no_grad():
@@ -266,7 +241,6 @@ class Model(nn.Module):
                     if device.type == 'cuda'
                     else faiss.IndexFlatL2(d_main)
                 )
-            # Updating the index is much faster than creating a new one.
             self.search_index.reset()
             self.search_index.add(candidate_k)  # type: ignore[code]
             distances: Tensor
@@ -275,18 +249,13 @@ class Model(nn.Module):
                 k, context_size + (1 if is_train else 0)
             )
             if is_train:
-                # NOTE: to avoid leakage, the index i must be removed from the i-th row,
-                # (because of how candidate_k is constructed).
                 distances[
                     context_idx == torch.arange(batch_size, device=device)[:, None]
                 ] = torch.inf
-                # Not the most elegant solution to remove the argmax, but anyway.
                 context_idx = context_idx.gather(-1, distances.argsort()[:, :-1])
 
         if self.memory_efficient and torch.is_grad_enabled():
             assert is_train
-            # Repeating the same computation,
-            # but now only for the context objects and with autograd on.
             context_k = self._encode(
                 {
                     ftype: torch.cat([x_[ftype], candidate_x_[ftype]])[
@@ -297,11 +266,6 @@ class Model(nn.Module):
             )[1].reshape(batch_size, context_size, -1)
         else:
             context_k = candidate_k[context_idx]
-
-        # In theory, when autograd is off, the distances obtained during the search
-        # can be reused. However, this is not a bottleneck, so let's keep it simple
-        # and use the same code to compute `similarities` during both
-        # training and evaluation.
         similarities = (
             -k.square().sum(-1, keepdim=True)
             + (2 * (k[..., None, :] @ context_k.transpose(-1, -2))).squeeze(-2)
@@ -334,7 +298,9 @@ class Config:
     patience: Optional[int]
     n_epochs: Union[int, float]
 
-def evaluate(model, X_eval_tensor, y_eval_tensor, candidate_X_tensor, candidate_y_tensor, context_size=10, eval_batch_size=32):
+context_size_default = 32
+
+def evaluate(model, X_eval_tensor, y_eval_tensor, candidate_X_tensor, candidate_y_tensor, context_size=context_size_default, eval_batch_size=32):
     model.eval()
     preds = []
     with torch.inference_mode():
@@ -343,12 +309,13 @@ def evaluate(model, X_eval_tensor, y_eval_tensor, candidate_X_tensor, candidate_
                 for i in range(0, len(X_eval_tensor), eval_batch_size):
                     batch_X = X_eval_tensor[i:i + eval_batch_size]
                     x_ = {'num': batch_X}
-                    candidate_x_ = {'num': batch_X}  # 후보 데이터 (예시로 학습 데이터 사용)
+                    candidate_x_ = {'num': candidate_X_tensor}   # 후보 데이터 (예시로 학습 데이터 사용)
+                    candidate_y = candidate_y_tensor
                     output = model(
                         x_=x_,
                         y=None,
                         candidate_x_=candidate_x_,
-                        candidate_y=candidate_y_tensor,
+                        candidate_y=candidate_y,
                         context_size=context_size,
                         is_train=False,
                     )
@@ -377,14 +344,14 @@ def evaluate(model, X_eval_tensor, y_eval_tensor, candidate_X_tensor, candidate_
         return {'PD': PD, 'PF': PF, 'FIR': FIR, 'Balance': Balance}
 
 def main() -> None:
-    # 데이터 전처리
-    splits = preprocess_data(data.file_paths)
-    # 모델 생성 및 학습
     if len(sys.argv) > 1:
-        dataset_name = sys.argv[1]
+        csv_path = sys.argv[1]
     else:
-        print("Error: No dataset name provided.")
+        print("Error: No CSV file path provided.")
         sys.exit(1)
+
+    splits = preprocess_data(csv_path)
+    dataset_name = os.path.splitext(os.path.basename(csv_path))[0]
 
     # 전처리된 데이터 가져오기
     if dataset_name not in splits:
@@ -394,7 +361,7 @@ def main() -> None:
     X_all = splits[dataset_name]["X_train"]
     y_all = numpy.array(splits[dataset_name]["y_train"], dtype=int)
 
-    n_splits = 5
+    n_splits = 10
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
 
     all_metrics = []
@@ -419,7 +386,7 @@ def main() -> None:
             cat_cardinalities=[],
             n_classes=2,
             num_embeddings=None,  # 또는 필요한 딕셔너리 제공
-            d_main=128,
+            d_main= 256,
             d_multiplier=2.0,
             encoder_n_blocks=3,
             predictor_n_blocks=2,
@@ -437,7 +404,7 @@ def main() -> None:
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
         loss_fn = nn.CrossEntropyLoss()
 
-        for epoch in range(30):
+        for epoch in range(50):
             model.train()
             epoch_loss = 0
             for batch_idx in lib.make_random_batches(len(y_tr_tensor), 32, device):
@@ -449,13 +416,21 @@ def main() -> None:
                 candidate_y = y_tr_tensor
 
                 optimizer.zero_grad()
-                output = model(x_, batch_y, candidate_x_, candidate_y, context_size=10, is_train=True)
+                output = model(x_, batch_y, candidate_x_, candidate_y, context_size=context_size_default, is_train=True)
                 loss = loss_fn(output, batch_y)
                 loss.backward()
                 optimizer.step()
                 epoch_loss += loss.item()
 
-        eval_metrics = evaluate(model, X_te_tensor, y_te_tensor, X_tr_tensor, y_tr_tensor)
+            avg_loss = epoch_loss / len(lib.make_random_batches(len(y_tr_tensor), 32, device))
+            val_metrics = evaluate(model, X_te_tensor, y_te_tensor, X_tr_tensor, y_tr_tensor, context_size=context_size_default)
+
+            # 에폭별 출력
+            print(f"[Epoch {epoch + 1:02d}] Train Loss: {avg_loss:.4f} | "
+                  f"PD: { val_metrics['PD']:.4f}, PF: {val_metrics['PF']:.4f}, "
+                  f"FIR: {val_metrics['FIR']:.4f}, Balance: {val_metrics['Balance']:.4f}")
+
+        eval_metrics = evaluate(model, X_te_tensor, y_te_tensor, X_tr_tensor, y_tr_tensor, context_size=context_size_default)
         all_metrics.append(eval_metrics)
 
     print("\n=== [최종 평균 성능] ===")

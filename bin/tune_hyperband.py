@@ -31,7 +31,7 @@ def train_and_evaluate_model(csv_path, d_main, encoder_n_blocks, context_size, p
     X_all = splits[dataset_name]["X_train"]
     y_all = splits[dataset_name]["y_train"]
 
-    kf = KFold(n_splits=3, shuffle=True, random_state=42)
+    kf = KFold(n_splits=10, shuffle=True, random_state=42)
     all_metrics = []
 
     for fold, (train_idx, test_idx) in enumerate(kf.split(X_all)):
@@ -66,7 +66,8 @@ def train_and_evaluate_model(csv_path, d_main, encoder_n_blocks, context_size, p
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
         loss_fn = torch.nn.CrossEntropyLoss()
 
-        for epoch in range(30):
+        n_epochs = 50
+        for epoch in range(n_epochs):
             model.train()
             for batch_idx in lib.make_random_batches(len(y_tr_tensor), 32, device):
                 batch_x = X_tr_tensor[batch_idx]
@@ -83,17 +84,16 @@ def train_and_evaluate_model(csv_path, d_main, encoder_n_blocks, context_size, p
 
             val_metrics = evaluate(model, X_te_tensor, y_te_tensor, X_tr_tensor, y_tr_tensor, context_size=context_size)
 
+            if trial is not None:
+                adjusted_score = val_metrics["PD"] - 0.5 * val_metrics["PF"]
+                trial.report(adjusted_score, step=epoch)
+                if trial.should_prune():
+                    raise optuna.TrialPruned()
+
         metrics = evaluate(model, X_te_tensor, y_te_tensor, X_tr_tensor, y_tr_tensor, context_size=context_size)
         all_metrics.append(metrics)
 
-    score = pd.DataFrame(all_metrics).mean().to_dict()
-
-    if trial is not None:
-        trial.report(score["PD"], step=0)
-        if trial.should_prune():
-            raise optuna.TrialPruned()
-
-    return score
+    return pd.DataFrame(all_metrics).mean().to_dict()
 
 def objective(trial, csv_path):
     d_main = trial.suggest_categorical("d_main", [64, 128, 256, 365])
@@ -137,11 +137,11 @@ if __name__ == '__main__':
         print(f"    Balance: {best.user_attrs['Balance']:.4f}")
         print(f"    Params: {best.params}")
 
-        with open(f"results/{dataset_name}.json", "w") as f:
+        with open(f"results/{dataset_name}_10fold_50epoch.json", "w") as f:
             json.dump({
                 "dataset": dataset_name,
                 "adjusted_score": best.value,
-                "PD": best.value,
+                "PD": best.user_attrs["PD"],
                 "PF": best.user_attrs["PF"],
                 "FIR": best.user_attrs["FIR"],
                 "Balance": best.user_attrs["Balance"],
